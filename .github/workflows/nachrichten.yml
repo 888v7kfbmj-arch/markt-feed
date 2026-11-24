@@ -1,0 +1,47 @@
+name: Feed aktualisieren
+
+on:
+  schedule:
+    # stündlich zwischen 6 und 22 Uhr deutscher Zeit (Angabe in UTC)
+    - cron: "17 4-20 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  abruf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FEED_SCHLUESSEL: ${{ secrets.FEED_SCHLUESSEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Quellen bereitstellen
+        env:
+          FEED_QUELLEN: ${{ secrets.FEED_QUELLEN }}
+        run: printf '%s' "$FEED_QUELLEN" > news/quellen.json
+      - name: Archiv entschlüsseln
+        run: python krypto.py auf
+      # Ausgaben unterdrückt, damit im öffentlichen Protokoll keine Quellen oder Überschriften erscheinen
+      - name: Abrufen
+        run: python news/news_aktualisieren.py > /dev/null 2>&1 || { echo "Abruf fehlgeschlagen"; exit 1; }
+      - name: Verschlüsseln
+        run: python krypto.py zu
+      - name: Speichern
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add daten/archiv.enc web/feed.js
+          if git diff --cached --quiet; then echo "Keine Änderung"; exit 0; fi
+          git commit -m "Aktualisierung $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
+      - name: Zwischenspeicher leeren
+        run: curl -fsS "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/web/feed.js" > /dev/null || true

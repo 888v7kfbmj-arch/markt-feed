@@ -7,7 +7,7 @@ Holt die RSS-Feeds aus quellen.json, führt sie mit dem Archiv der letzten 30 Ta
 und schreibt news-data.js (vom Dashboard gelesen) sowie news-archiv.json.
 Es werden nur öffentliche Feeds gelesen; es werden keine Daten an Dritte gesendet.
 """
-import json, os, re, sys, html, hashlib, datetime, time, urllib.request, urllib.parse
+import json, os, re, sys, html, hashlib, datetime, time, urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
@@ -27,6 +27,9 @@ KONZERN_NAME = re.compile(r"versicherungskammer|\bvkb\b|bayern-versicherung|bava
 def relevant(q, t, s, gn):
     txt = (t or "") + " " + (s or "")
     if q.get("filter") and not RELEVANZ.search(txt):
+        return False
+    # quellenspezifisches Muster (z. B. BaFin: nur Versicherungsaufsicht statt Bankenthemen)
+    if q.get("muster") and not re.search(q["muster"], txt, re.I):
         return False
     if q.get("konzern") and gn and not (RELEVANZ.search(txt) or KONZERN_NAME.search(txt)):
         return False
@@ -81,6 +84,20 @@ def feed_url(f):
     return f
 
 
+def laden(req):
+    """Feed abrufen; bei Zeitüberschreitung oder Serverfehler bis zu dreimal versuchen."""
+    for versuch in range(3):
+        try:
+            return urllib.request.urlopen(req, timeout=30).read()
+        except urllib.error.HTTPError as e:
+            if (e.code < 500 and e.code != 429) or versuch == 2:
+                raise
+        except Exception:
+            if versuch == 2:
+                raise
+        time.sleep(4 * (versuch + 1))
+
+
 def feed_lesen(q, f):
     name = ""
     if "|" in f and not f.startswith("gnews:"):  # "Zeitung|https://…" = Anzeigename der Zeitung
@@ -90,7 +107,7 @@ def feed_lesen(q, f):
     if gn:
         time.sleep(1.5)  # Google News nicht in schneller Folge abfragen
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml"})
-    raw = urllib.request.urlopen(req, timeout=30).read()
+    raw = laden(req)
     raw = re.sub(rb"<!DOCTYPE[^>]*>", b"", raw, flags=re.I)  # keine DTD-Verarbeitung
     root = ET.fromstring(raw)
     ns = {"a": "http://www.w3.org/2005/Atom"}
@@ -114,6 +131,7 @@ def feed_lesen(q, f):
                 continue
             if t.endswith(" - " + herkunft):
                 t = t[:-len(herkunft) - 3]
+            t = re.sub(r"^(?:Startseite|Aktuelles & Presse|Aktuelles|Pressemitteilungen?)\s+[-–]\s+", "", t)  # Seitenrubrik vor dem Titel
             s = ""
         t, s = bereinigen(t, 220), bereinigen(s)
         dt = datum(d)
@@ -150,9 +168,9 @@ def main():
     # Archiv mit denselben Regeln bereinigen (z. B. nach geänderten Filtern)
     qmap = {q["id"]: q for q in cfg["quellen"]}
     vorher = len(alt)
-    alt = [i for i in alt if i.get("q") not in qmap or relevant(qmap[i["q"]], i.get("t"), i.get("s"), bool(i.get("g")))]
+    alt = [i for i in alt if i.get("q") in qmap and relevant(qmap[i["q"]], i.get("t"), i.get("s"), bool(i.get("g")))]
     if len(alt) < vorher:
-        print("  Archiv: %d Meldungen ohne Versicherungsbezug entfernt" % (vorher - len(alt)))
+        print("  Archiv: %d Meldungen entfernt (ohne Versicherungsbezug oder Quelle entfernt)" % (vorher - len(alt)))
     jetzt = datetime.datetime.now(datetime.timezone.utc)
     status, neu = [], []
     for q in cfg["quellen"]:
@@ -170,11 +188,18 @@ def main():
                         fehler.append(str(e)[:80])
                 if fehler and len(fehler) == len(feeds):
                     raise Exception(fehler[0])
+                # dieselbe Meldung aus mehreren Feeds einer Quelle nur einmal übernehmen
+                einmal, roh, items = set(), items, []
+                for i in roh:
+                    k = re.sub(r"[^a-z0-9äöüß]+", "", (i["t"] or "").lower())[:90]
+                    if k not in einmal:
+                        einmal.add(k)
+                        items.append(i)
                 for i in items:
                     if not i["d"]:
                         i["d"] = jetzt.strftime("%Y-%m-%dT%H:%M:%SZ")
                 neu += items
-                st.update(ok=True, n=len(items), info=("%d von %d Feeds nicht erreichbar" % (len(fehler), len(feeds))) if fehler else "")
+                st.update(ok=True, n=len(items), info=("%d von %d Feeds nicht erreichbar" % (len(fehler), len(feeds))) if fehler else q.get("hinweis", ""))
                 print("  ✓ %-34s %3d Artikel" % (q["name"], len(items)))
             except Exception as e:
                 st.update(ok=False, n=0, info=str(e)[:160])

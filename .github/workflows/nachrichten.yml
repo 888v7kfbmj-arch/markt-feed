@@ -2,8 +2,8 @@ name: Feed aktualisieren
 
 on:
   schedule:
-    # stündlich zwischen 6 und 22 Uhr deutscher Zeit (Angabe in UTC)
-    - cron: "17 4-20 * * *"
+    # alle 30 Minuten zwischen 6 und 22 Uhr deutscher Zeit (Angabe in UTC); doppelt, weil GitHub einzelne geplante Läufe auslässt
+    - cron: "17,47 4-20 * * *"
   workflow_dispatch: {}
 
 permissions:

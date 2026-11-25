@@ -15,8 +15,22 @@ HIER = os.path.dirname(os.path.abspath(__file__))
 UA = "Mozilla/5.0 (compatible; Markt-News-Feed/1.0; Feedreader)"
 TAGE = 30
 MAX_JE_QUELLE = 80
-RELEVANZ = re.compile(r"versicher|assekuranz|makler|vermittler|rente|altersvorsorge|riester|betriebsrente|\bbav\b|pkv|krankenversich|pflegeversich|"
-                      r"kfz|gdv|solvency|\bidd\b|provision|elementar|police|insurer|insurance|rückversich|lebensversich", re.I)
+RELEVANZ = re.compile(r"versicher|assekuranz|makler|vermittler|rente\b|renten|rentner|altersvorsorge|riester|betriebsrente|\bbav\b|pkv|krankenversich|pflegeversich|"
+                      r"kfz|gdv|solvency|\bidd\b|provision|elementar|police|insurer|insurance|rückversich|lebensversich|"
+                      r"haftpflicht|rechtsschutz|berufsunfähig|unfallversich|krankenkasse|bafin|eiopa|reinsur|underwrit", re.I)
+# Google-News-Suche nach Konzernnamen: Treffer nur übernehmen, wenn Titel oder Anriss Versicherungs- oder Konzernbezug haben
+KONZERN_NAME = re.compile(r"versicherungskammer|\bvkb\b|bayern-versicherung|bavariadirekt|feuersoziet|saarland (?:versicherung|feuer|leben)|"
+                          r"öffentliche leben|union krankenversicherung|\bukv\b|union reiseversicherung|beamtenkrankenkasse|landesbrandversicherung|"
+                          r"versicherungsverband|consal", re.I)
+
+
+def relevant(q, t, s, gn):
+    txt = (t or "") + " " + (s or "")
+    if q.get("filter") and not RELEVANZ.search(txt):
+        return False
+    if q.get("konzern") and gn and not (RELEVANZ.search(txt) or KONZERN_NAME.search(txt)):
+        return False
+    return True
 # Google-News-Suche: Feed-Einträge der Form "gnews:Suchbegriff" in quellen.json
 GNEWS = "https://news.google.com/rss/search?"
 # Treffer aus Stellenmärkten und von konzerneigenen Websites (z. B. Kulturstiftung) nicht übernehmen
@@ -105,7 +119,7 @@ def feed_lesen(q, f):
         dt = datum(d)
         if not t or not u:
             continue
-        if q.get("filter") and not RELEVANZ.search(t + " " + s):
+        if not relevant(q, t, s, gn):
             continue
         eintrag = {"id": hashlib.md5(u.encode("utf-8")).hexdigest()[:12], "q": q["id"], "t": t, "u": u.strip(),
                    "d": dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None, "s": s}
@@ -133,6 +147,12 @@ def main():
             alt = json.load(open(archiv_pfad, encoding="utf-8")).get("items", [])
         except Exception:
             alt = []
+    # Archiv mit denselben Regeln bereinigen (z. B. nach geänderten Filtern)
+    qmap = {q["id"]: q for q in cfg["quellen"]}
+    vorher = len(alt)
+    alt = [i for i in alt if i.get("q") not in qmap or relevant(qmap[i["q"]], i.get("t"), i.get("s"), bool(i.get("g")))]
+    if len(alt) < vorher:
+        print("  Archiv: %d Meldungen ohne Versicherungsbezug entfernt" % (vorher - len(alt)))
     jetzt = datetime.datetime.now(datetime.timezone.utc)
     status, neu = [], []
     for q in cfg["quellen"]:
